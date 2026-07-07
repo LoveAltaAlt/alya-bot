@@ -1,283 +1,214 @@
-const { Client, GatewayIntentBits } = require("discord.js");
-const fs = require("fs");
-const path = require("path");
-const https = require("https");
-const {
-  backupServer,
-  restoreServer,
-  zipBackup,
-  splitFile,
-} = require("./systems/backupRestore");
+const fs = require('fs');
+const axios = require('axios');
+const path = require('path');
+const archiver = require('archiver');
 
-const client = new Client({
-  intents: [
-    GatewayIntentBits.Guilds,
-    GatewayIntentBits.GuildMembers,
-    GatewayIntentBits.GuildModeration,
-    GatewayIntentBits.GuildMessages,
-    GatewayIntentBits.MessageContent,
-    GatewayIntentBits.GuildVoiceStates
-  ]
-});
 
-const OWNER_ID = "1372615579407618209";
-const BACKUP_CHANNEL_ID = "1479261311635554435";
-const ZIP_URL = "https://github.com/alyacombed2/alya-bot1/archive/refs/heads/main.zip";
-const ZIP_FILE_NAME = "alya-bot-main.zip";
-
-require("./systems/main")(client);
-require("./systems/gfzin")(client);
-require("./systems/coco")(client);
-require("./systems/comandos")(client);
-require("./systems/uno")(client);
-
-client.once("clientReady", () => {
-  console.log(`✅ Bot online como ${client.user.tag}`);
-});
-
-function baixarArquivo(url, destino) {
-  return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(destino);
-
-    https.get(url, (response) => {
-      if (
-        response.statusCode >= 300 &&
-        response.statusCode < 400 &&
-        response.headers.location
-      ) {
-        file.close();
-        fs.unlink(destino, () => {});
-        return baixarArquivo(response.headers.location, destino)
-          .then(resolve)
-          .catch(reject);
-      }
-
-      if (response.statusCode !== 200) {
-        file.close();
-        fs.unlink(destino, () => {});
-        return reject(new Error(`Falha ao baixar arquivo. Status: ${response.statusCode}`));
-      }
-
-      response.pipe(file);
-
-      file.on("finish", () => {
-        file.close(resolve);
-      });
-    }).on("error", (err) => {
-      file.close();
-      fs.unlink(destino, () => {});
-      reject(err);
-    });
-  });
+function sleep(ms) {
+    return new Promise(res => setTimeout(res, ms));
 }
 
-async function enviarZipAtualizado() {
-  try {
-    const canal = await client.channels.fetch(BACKUP_CHANNEL_ID).catch(() => null);
-    if (!canal) {
-      console.log("❌ Canal de backup não encontrado.");
-      return false;
-    }
 
-    const filePath = path.join(__dirname, ZIP_FILE_NAME);
+async function backupServer(guild) {
+    const basePath = `./global-backup`;
+    const channelsPath = `${basePath}/channels`;
+    const filesPath = `${basePath}/files`;
 
-    console.log("📦 Baixando ZIP atualizado do GitHub...");
-    await baixarArquivo(ZIP_URL, filePath);
+    fs.mkdirSync(basePath, { recursive: true });
+    fs.mkdirSync(channelsPath, { recursive: true });
+    fs.mkdirSync(filesPath, { recursive: true });
 
-    await canal.send({
-      content: "📦 **script gfzin.js atualizado pasta do bot atualizada**",
-      files: [filePath]
-    });
+    const serverData = [];
 
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-    }
+    for (const channel of guild.channels.cache.values()) {
+        if (!channel.isTextBased()) continue;
 
-    console.log("✅ ZIP atualizado enviado com sucesso.");
-    return true;
-  } catch (err) {
-    console.log("❌ Erro ao enviar ZIP atualizado:", err.message);
-    return false;
-  }
-}
+        let allMessages = [];
+        let lastId;
 
-async function enviarArquivosBackup(parts, motivo = "Backup") {
-  let dmEnviada = false;
-  let canalEnviado = false;
+        while (true) {
+            const options = { limit: 100 };
+            if (lastId) options.before = lastId;
 
-  try {
-    const user = await client.users.fetch(OWNER_ID);
-    const dm = await user.createDM();
+            const messages = await channel.messages.fetch(options);
+            if (messages.size === 0) break;
 
-    await dm.send(`⚠️ ${motivo}\n📦 Enviando backup automático...`);
+            allMessages.push(...messages.values());
+            lastId = messages.last().id;
+        }
 
-    for (let i = 0; i < parts.length; i++) {
-      await dm.send({
-        content: `📦 Parte ${i + 1}/${parts.length}`,
-        files: [parts[i]]
-      });
+        const formatted = [];
 
-      await new Promise(res => setTimeout(res, 1500));
-    }
+        for (const msg of allMessages.reverse()) {
+            let attachments = [];
 
-    await dm.send("✅ Backup enviado com sucesso!");
-    dmEnviada = true;
-  } catch (err) {
-    console.log("❌ Erro ao enviar na DM:", err.message);
-  }
+            for (const att of msg.attachments.values()) {
+                const fileName = `${Date.now()}-${att.name}`;
+                const filePath = `${filesPath}/${fileName}`;
 
-  try {
-    const canal = await client.channels.fetch(BACKUP_CHANNEL_ID).catch(() => null);
+                try {
+                    const response = await axios.get(att.url, { responseType: 'arraybuffer' });
+                    fs.writeFileSync(filePath, response.data);
+                    attachments.push(fileName);
+                } catch {
+                    attachments.push(att.url);
+                }
+            }
 
-    if (canal) {
-      await canal.send(`⚠️ ${motivo}\n📦 Enviando backup automático...`);
+            formatted.push({
+                author: msg.author.tag,
+                content: msg.content || "",
+                attachments
+            });
+        }
 
-      for (let i = 0; i < parts.length; i++) {
-        await canal.send({
-          content: `📦 Parte ${i + 1}/${parts.length}`,
-          files: [parts[i]]
+        fs.writeFileSync(
+            `${channelsPath}/${channel.name}.json`,
+            JSON.stringify(formatted, null, 2)
+        );
+
+        serverData.push({
+            name: channel.name,
+            type: channel.type
         });
-
-        await new Promise(res => setTimeout(res, 1500));
-      }
-
-      await canal.send("✅ Backup enviado com sucesso!");
-      canalEnviado = true;
     }
-  } catch (err) {
-    console.log("❌ Erro ao enviar no canal:", err.message);
-  }
 
-  if (!dmEnviada && !canalEnviado) {
-    console.log("❌ Não consegui enviar backup nem na DM nem no canal.");
-  }
+    fs.writeFileSync(
+        `${basePath}/server.json`,
+        JSON.stringify(serverData, null, 2)
+    );
+
+    console.log("📦 Backup completo salvo em ./global-backup");
 }
 
-async function limparPartesTemporarias(parts) {
-  try {
-    for (const file of parts) {
-      if (fs.existsSync(file)) {
-        fs.unlinkSync(file);
-      }
+
+async function zipBackup() {
+    return new Promise((resolve, reject) => {
+        const zipPath = `global-backup.zip`;
+        const output = fs.createWriteStream(zipPath);
+        const archive = archiver('zip');
+
+        output.on('close', () => resolve(zipPath));
+        archive.on('error', err => reject(err));
+
+        archive.pipe(output);
+        archive.directory(`./global-backup`, false);
+        archive.finalize();
+    });
+}
+
+
+function splitFile(filePath, chunkSize = 20 * 1024 * 1024) {
+    const buffer = fs.readFileSync(filePath);
+    const parts = [];
+
+    let index = 0;
+    for (let i = 0; i < buffer.length; i += chunkSize) {
+        const chunk = buffer.slice(i, i + chunkSize);
+        const partName = `${filePath}.part${index}`;
+
+        fs.writeFileSync(partName, chunk);
+        parts.push(partName);
+        index++;
     }
-  } catch (err) {
-    console.log("⚠️ Erro ao limpar arquivos temporários:", err.message);
-  }
+
+    return parts;
 }
 
-async function enviarBackupAutomatico(motivo = "Encerramento") {
-  try {
-    const guild = client.guilds.cache.first();
-    if (!guild) return;
 
-    console.log(`📦 Backup automático iniciado (${motivo})`);
+async function restoreServer(guild) {
+    const basePath = `./global-backup`;
+    const channelsPath = `${basePath}/channels`;
+    const filesPath = `${basePath}/files`;
 
-    await backupServer(guild);
-    const zipPath = await zipBackup(guild.id);
-    const parts = splitFile(zipPath);
+    if (!fs.existsSync(basePath)) {
+        console.log("❌ Backup não encontrado!");
+        return;
+    }
 
-    await enviarArquivosBackup(parts, `⚠️ Bot finalizado (${motivo})`);
-    await limparPartesTemporarias(parts);
-  } catch (err) {
-    console.log("❌ Erro backup auto:", err.message);
-  }
-}
-
-process.on("SIGINT", async () => {
-  console.log("🛑 SIGINT detectado");
-  await enviarBackupAutomatico("SIGINT");
-  process.exit(0);
-});
-
-process.on("SIGTERM", async () => {
-  console.log("🛑 SIGTERM detectado");
-  await enviarBackupAutomatico("SIGTERM (Railway)");
-  process.exit(0);
-});
-
-process.on("uncaughtException", async (err) => {
-  console.log("💥 ERRO:", err);
-  await enviarBackupAutomatico("Erro crítico");
-  process.exit(1);
-});
-
-process.on("unhandledRejection", async (reason) => {
-  console.log("💥 PROMISE ERROR:", reason);
-  await enviarBackupAutomatico("Promise rejeitada");
-});
-
-setInterval(async () => {
-  try {
-    const guild = client.guilds.cache.first();
-    if (!guild) return;
-
-    console.log("💾 Backup automático periódico...");
-    await backupServer(guild);
-  } catch (err) {
-    console.log("❌ Erro auto backup:", err.message);
-  }
-}, 1000 * 60 * 30);
-
-setInterval(async () => {
-  try {
-    const canal = await client.channels.fetch(BACKUP_CHANNEL_ID).catch(() => null);
-    if (!canal) return;
-
-    await canal.send("📡 **Container Railway online**");
-    console.log("📡 Mensagem de status do container enviada.");
-  } catch (err) {
-    console.log("❌ Erro ao enviar status do container:", err.message);
-  }
-}, 1000 * 60 * 60 * 24);
-
-client.on("messageCreate", async (message) => {
-  if (!message.guild || message.author.bot) return;
-  if (message.author.id !== OWNER_ID) return;
-
-  if (message.content === "!backup") {
-    await message.reply("📦 Fazendo backup...");
-
+    let serverData;
     try {
-      await backupServer(message.guild);
-      const zipPath = await zipBackup(message.guild.id);
-      const parts = splitFile(zipPath);
-
-      await message.reply(`📤 Enviando ${parts.length} partes na DM e no canal...`);
-      await enviarArquivosBackup(parts, "📦 Backup manual solicitado");
-      await limparPartesTemporarias(parts);
-
-      await message.reply("✅ Backup enviado!");
+        serverData = JSON.parse(fs.readFileSync(`${basePath}/server.json`));
     } catch (err) {
-      console.log("❌ ERRO BACKUP MANUAL:", err.message);
-      await message.reply("❌ Não consegui enviar o backup!");
+        console.log("❌ ERRO server.json:", err.message);
+        return;
     }
-  }
 
-  if (message.content === "!restore") {
-    await message.reply("♻️ Restaurando servidor...");
+    console.log("📁 Restaurando sem apagar canais...");
 
-    try {
-      await restoreServer(message.guild);
-      await message.reply("✅ Restore concluído!");
-    } catch (err) {
-      console.log("❌ ERRO RESTORE:", err.message);
-      await message.reply("❌ Erro ao restaurar o servidor.");
+    for (const ch of serverData) {
+
+        let existingChannel = guild.channels.cache.find(c => c.name === ch.name);
+
+        let newChannel;
+
+        if (existingChannel) {
+            newChannel = existingChannel;
+        } else {
+            newChannel = await guild.channels.create({
+                name: ch.name,
+                type: 0
+            });
+
+            await sleep(1000);
+        }
+
+        const filePathJson = `${channelsPath}/${ch.name}.json`;
+        if (!fs.existsSync(filePathJson)) continue;
+
+        let messages;
+        try {
+            messages = JSON.parse(fs.readFileSync(filePathJson));
+        } catch {
+            continue;
+        }
+
+        messages = messages.slice(0, 300);
+
+        for (const msg of messages) {
+            let content = `**${msg.author}:** ${msg.content}`;
+
+            
+            const parts = content.match(/[\s\S]{1,1900}/g) || [];
+
+            for (const part of parts) {
+                try {
+                    if (msg.attachments.length > 0) {
+                        for (const file of msg.attachments) {
+                            const filePath = path.join(filesPath, file);
+
+                            if (fs.existsSync(filePath)) {
+                                await newChannel.send({
+                                    content: part,
+                                    files: [filePath]
+                                });
+                            } else {
+                                await newChannel.send(part + "\n" + file);
+                            }
+
+                            await sleep(1200);
+                        }
+                    } else {
+                        await newChannel.send(part);
+                        await sleep(800);
+                    }
+                } catch (err) {
+                    console.log("⚠️ Erro:", err.message);
+                    await sleep(2000);
+                }
+            }
+        }
     }
-  }
 
-  
+    console.log("✅ Restore finalizado!");
+}
 
-  if (message.content === "!att") {
-    await message.reply("📦 Baixando e enviando atualização do bot...");
 
-    const enviado = await enviarZipAtualizado();
 
-    if (enviado) {
-      await message.reply("✅ ZIP atualizado enviado no canal!");
-    } else {
-      await message.reply("❌ Não consegui enviar o ZIP atualizado.");
-    }
-  }
-});
 
-client.login(process.env.TOKEN);
+module.exports = {
+    backupServer,
+    restoreServer,
+    zipBackup,
+    splitFile,
+};
