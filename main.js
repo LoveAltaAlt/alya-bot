@@ -1,213 +1,150 @@
-const {
-  ActivityType,
-  EmbedBuilder,
-  ModalBuilder,
-  TextInputBuilder,
-  TextInputStyle,
-  ActionRowBuilder,
-  InteractionType,
-  REST,
-  Routes
-} = require("discord.js");
+const fs = require("fs");
 
 module.exports = (client) => {
-  const GUILD_ID = "1467265519676559502";
-  const CLIENT_ID = "1467477370075091055";
 
-  const ALLOWED_ROLES = [
-    "1467271978313580707",
-    "1467272008193671188",
-    "1478154024866943199",
-    "1476319473957867632"
-  ];
+const LOG_CHANNEL = "1479261311635554435";
+const WARN_LIMIT = 3;
+const TIMEOUT = 10 * 60 * 1000;
 
-  const STOCK_ROLE_ID = "1467271978313580707";
-  const USER_ID = "1372615579407618209";
-  const SPECIAL_ROLE_ID = "1484705404385628334";
+let warns = {};
 
-  client.once("ready", async () => {
-    console.log(`✅ Bot online como ${client.user.tag}`);
+if (fs.existsSync("./warns.json")) {
+  warns = JSON.parse(fs.readFileSync("./warns.json"));
+}
 
-    client.user.setActivity("🎮・OrbitStore", {
-      type: ActivityType.Playing,
-    });
+function save() {
+  fs.writeFileSync("./warns.json", JSON.stringify(warns, null, 2));
+}
 
-    const commands = [
-      {
-        name: "stock",
-        description: "Atualiza o stock do servidor",
-      },
-    ];
+client.on("messageCreate", async (message) => {
 
-    const rest = new REST({ version: "10" }).setToken(process.env.TOKEN);
+if (!message.guild) return;
+if (message.author.bot) return;
+if (!message.content.startsWith("!")) return;
 
-    try {
-      await rest.put(
-        Routes.applicationGuildCommands(CLIENT_ID, GUILD_ID),
-        { body: commands }
-      );
-      console.log("✅ Comando /stock registrado no servidor!");
-    } catch (err) {
-      console.error("Erro ao registrar comando:", err);
-    }
-  });
+const args = message.content.split(" ");
+const command = args.shift().toLowerCase();
 
-  client.on("messageCreate", async (message) => {
-    if (message.author.bot || !message.guild) return;
+const log = message.guild.channels.cache.get(LOG_CHANNEL);
 
-    const member = message.member;
-    if (!member) return;
 
-    const hasPermission = member.roles.cache.some(role =>
-      ALLOWED_ROLES.includes(role.id)
-    );
 
-    if (message.content === "!remover" || message.content === "!adicionar") {
-      try {
-        await message.delete().catch(() => {});
-        const targetUser = await message.guild.members.fetch(USER_ID).catch(() => null);
-        const specialRole = message.guild.roles.cache.get(SPECIAL_ROLE_ID);
-        if (!targetUser || !specialRole) return;
 
-        if (message.content === "!remover") {
-          if (targetUser.roles.cache.has(SPECIAL_ROLE_ID)) {
-            await targetUser.roles.remove(SPECIAL_ROLE_ID).catch(() => {});
-          }
-        } else if (message.content === "!adicionar") {
-          if (!targetUser.roles.cache.has(SPECIAL_ROLE_ID)) {
-            await targetUser.roles.add(SPECIAL_ROLE_ID).catch(() => {});
-          }
-        }
-      } catch (err) {
-        console.error("Erro remover/adicionar:", err);
-      }
-      return;
-    }
+if (command === "!warn") {
 
-    if (!hasPermission) return;
+if (!message.member.permissions.has("ModerateMembers"))
+return message.reply("❌ Você não tem permissão.");
 
-    try {
-      if (message.content === "!pix") {
-        await message.delete().catch(() => {});
-        const embed = new EmbedBuilder()
-          .setColor("#c9a7ff")
-          .setDescription(
-`<:pix:1467502803898466529> ﹒✿゛**Pagamento via PIX** ♡ <:pix:1467502803898466529>
+const user = message.mentions.members.first();
+if (!user) return message.reply("❌ Marque um usuário.");
 
-<:mm2:1467502795526639819> **Orbit Store | MM2**
-<:seta:1467509708503126250> **Chave PIX:** \`miguelmarchetti4@gmail.com\`
+if (user.permissions.has("Administrator"))
+return message.reply("❌ Não pode warnar um admin.");
 
-<:zerotwo:1467509417938260203> Após o pagamento, **envie o comprovante**
-<:coraao:1467509047782805607> Agradecemos a confiança!`
-          )
-          .setImage("https://media.discordapp.net/attachments/1376263450011107359/1467348866125795561/content.png")
-          .setFooter({ text: "🎮 Orbit Store ♡" });
+const reason = args.slice(1).join(" ") || "Sem motivo";
 
-        await message.channel.send({ embeds: [embed] });
-      } else if (message.content === "!processando") {
-        await message.delete().catch(() => {});
-        const embed = new EmbedBuilder()
-          .setColor("#ffe08a")
-          .setDescription(
-`<:morango:1467510010408997108> ﹒✿゛**Pagamento em Processamento** ♡
+if (!warns[user.id]) warns[user.id] = [];
 
-<:mm2:1467502795526639819> **Orbit Store | MM2**
-Pagamento recebido <:zerotwo:1467509417938260203>
-Em análise pela equipe ⏳
+warns[user.id].push({
+reason: reason,
+mod: message.author.id,
+date: Date.now()
+});
 
-<:coraao:1467509047782805607> Aguarde alguns instantes`
-          )
-          .setImage("https://media.discordapp.net/attachments/1376263450011107359/1467348866125795561/content.png")
-          .setFooter({ text: "🎮 Orbit Store ♡" });
+save();
 
-        await message.channel.send({ embeds: [embed] });
-      } else if (message.content === "!concluido") {
-        await message.delete().catch(() => {});
-        const embed = new EmbedBuilder()
-          .setColor("#8affb1")
-          .setDescription(
-`<:certo:1467510357764472842> ﹒✿゛**Pagamento Concluído** ♡
+message.reply(`⚠️ ${user.user.tag} recebeu um warn.\nMotivo: **${reason}**`);
 
-<:mm2:1467502795526639819> **Orbit Store | MM2**
-Pagamento confirmado 🎮
-Seu item será entregue em instantes
+if (log) {
+log.send(
+`⚠️ **WARN**
+👤 Usuário: ${user}
+🛠️ Mod: ${message.author}
+📄 Motivo: ${reason}
+📊 Total: ${warns[user.id].length}/${WARN_LIMIT}`
+);
+}
 
-<:coraao:1467509047782805607> Obrigado pela compra!`
-          )
-          .setImage("https://media.discordapp.net/attachments/1376263450011107359/1467348866125795561/content.png")
-          .setFooter({ text: "🎮 Orbit Store ♡" });
 
-        await message.channel.send({ embeds: [embed] });
-      } else if (message.content === "!final") {
-        await message.delete().catch(() => {});
-        const embed = new EmbedBuilder()
-          .setColor("#bfa7ff")
-          .setDescription(
-`<:hellokitty:1467502793651912819> ﹒✿゛**Pedido Finalizado** ♡
+if (warns[user.id].length >= WARN_LIMIT) {
 
-<:mm2:1467502795526639819> **Orbit Store | MM2**
-Pedido entregue com sucesso ⭐
+try {
 
-Deixe seu feedback:
-<:seta:1467509708503126250> <#1467490270869328022>
-<:seta:1467509708503126250> <#1467267925412155575>`
-          )
-          .setImage("https://media.discordapp.net/attachments/1376263450011107359/1467348866125795561/content.png")
-          .setFooter({ text: "🎮 Orbit Store ♡" });
+await user.timeout(TIMEOUT, "Limite de warns atingido");
 
-        await message.channel.send({ embeds: [embed] });
-      }
-    } catch (err) {
-      console.error("Erro:", err);
-    }
-  });
+if (log) {
+log.send(`⛓️ ${user} recebeu **timeout de 10 minutos** por atingir ${WARN_LIMIT} warns.`);
+}
 
-  client.on("interactionCreate", async (interaction) => {
-    if (interaction.isChatInputCommand() && interaction.commandName === "stock") {
-      const member = interaction.member;
+warns[user.id] = [];
+save();
 
-      if (!member.roles.cache.has(STOCK_ROLE_ID)) {
-        return interaction.reply({
-          content: "❌ Você não tem permissão.",
-          ephemeral: true,
-        });
-      }
+} catch (err) {
+console.log(err);
+}
 
-      const modal = new ModalBuilder()
-        .setCustomId("stock_modal")
-        .setTitle("📦 Atualizar Stock");
+}
 
-      const input = new TextInputBuilder()
-        .setCustomId("stock_text")
-        .setLabel("Digite o stock")
-        .setStyle(TextInputStyle.Paragraph)
-        .setRequired(true);
+}
 
-      modal.addComponents(
-        new ActionRowBuilder().addComponents(input)
-      );
 
-      await interaction.showModal(modal);
-    }
 
-    if (
-      interaction.type === InteractionType.ModalSubmit &&
-      interaction.customId === "stock_modal"
-    ) {
-      const stock = interaction.fields.getTextInputValue("stock_text");
 
-      const embed = new EmbedBuilder()
-        .setColor("#c9a7ff")
-        .setTitle("📦 Stock Atualizado <:hellokitty:1467502793651912819>")
-        .setDescription(stock)
-        .setFooter({ text: "🎮 Orbit Store ♡" });
+if (command === "!warnings") {
 
-      await interaction.channel.send({ embeds: [embed] });
+const user = message.mentions.members.first();
+if (!user) return message.reply("Marque um usuário.");
 
-      await interaction.reply({
-        content: "✅ Stock enviado!",
-        ephemeral: true,
-      });
-    }
-  });
+if (!warns[user.id] || warns[user.id].length === 0)
+return message.reply("✅ Esse usuário não tem warns.");
+
+let list = warns[user.id]
+.map((w,i)=>`${i+1}. Motivo: **${w.reason}** | Mod: <@${w.mod}>`)
+.join("\n");
+
+message.reply(`📊 Warns de ${user.user.tag}\n\n${list}`);
+
+}
+
+
+
+
+if (command === "!unwarn") {
+
+if (!message.member.permissions.has("ModerateMembers"))
+return message.reply("❌ Sem permissão.");
+
+const user = message.mentions.members.first();
+if (!user) return message.reply("Marque um usuário.");
+
+if (!warns[user.id] || warns[user.id].length === 0)
+return message.reply("Esse usuário não tem warns.");
+
+warns[user.id].pop();
+save();
+
+message.reply(`✅ Um warn removido de ${user.user.tag}`);
+
+}
+
+
+
+
+if (command === "!clearwarn") {
+
+if (!message.member.permissions.has("Administrator"))
+return message.reply("❌ Apenas admins.");
+
+const user = message.mentions.members.first();
+if (!user) return message.reply("Marque um usuário.");
+
+warns[user.id] = [];
+save();
+
+message.reply(`🧹 Warns de ${user.user.tag} foram limpos.`);
+
+}
+
+});
+
 };
